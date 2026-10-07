@@ -425,9 +425,21 @@ function resolveElectronRuntimeZCodeAgentCommand(
   if (!bundlePath) {
     return null;
   }
+  // chat agent-server 子进程会随会话历史体积累积 RSS：每次模型调用都会把完整上下文
+  // 重新序列化，长会话（大工具输出 / workflow 子代理并存）下单个子进程可涨到 1GB+，
+  // 最终触发 systemd-oomd 击杀整个应用。参考 dynamic-workflow 子进程的
+  // DEFAULT_MAX_OLD_SPACE_MB 做法，给 chat 子进程也设一个可配置的堆上限。
+  // 注意：--max-old-space-size 必须位于入口脚本之前——放在其后 V8 不解析
+  // （堆上限保持默认 ~4GB），且会被 CLI 的严格参数解析器以 Unknown option 拒绝。
+  const rawCapMb = process.env.ZCODE_AGENT_HEAP_CAP_MB ?? "1024";
+  const capMb = Number.parseInt(rawCapMb, 10);
+  const heapCapArgs =
+    Number.isFinite(capMb) && capMb >= 128 && capMb <= 32768
+      ? [`--max-old-space-size=${capMb}`]
+      : [];
   return {
     command: process.execPath,
-    args: [bundlePath, ...ZCODE_AGENT_RUNTIME.spawnArgs],
+    args: [...heapCapArgs, bundlePath, ...ZCODE_AGENT_RUNTIME.spawnArgs],
     storagePreparationEntry: bundlePath,
     cwd: context.workspacePath,
     // 关键：必须以纯 Node 模式启动，否则子进程会被当成 Electron/Chromium 子进程卡在 GPU 初始化。
